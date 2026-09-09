@@ -226,38 +226,13 @@ const AuthApp = () => {
   }
 };
 
-  const googleLogin = useGoogleLogin({
-    onSuccess: async (tokenResponse)=>{
-      try{
-        const res = await api.post("/api/auth/google-login",{
-         token: tokenResponse.access_token,
-      })
-
-      const {token,user} = res.data;
-
-      localStorage.setItem("token",token);
-
-      triggerConfetti();
-      alert(`Welcome ${user.name}, Logged in with Google!`)
-    } catch(error){
-       console.error("Google login error",error);
-       alert("Google authentication failed ❌" )
-    }
-    },
-    onError: () => alert("Google authentication failed ❌")
-  })
-
-
   const handleSocialAuth = (provider) => {
-    if (provider === "Google") {
-      googleLogin(); // actually start Google OAuth flow
-    }
-    // setIsLoading(true);
-    // setTimeout(() => {
-    //   setIsLoading(false);
-    //   triggerConfetti();
-    //   alert(`${provider} authentication successful! 🎉`);
-    // }, 1500);
+    Swal.fire({
+      icon: "info",
+      title: `${provider} Sign-in`,
+      text: `${provider} OAuth is in preview! Please sign in with your Email and Password.`,
+      confirmButtonColor: "#6366f1",
+    });
   };
 
   const resetForm = () => {

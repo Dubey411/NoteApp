@@ -2,8 +2,15 @@ const bcrypt = require("bcrypt"); // corrected
 const jwt = require("jsonwebtoken");
 const User = require("../models/user"); // Update path to your User model
 const authMiddleware = require("../middleware/authmid"); // corrected
-const { OAuth2Client } = require("google-auth-library");
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+let client = null;
+try {
+  const { OAuth2Client } = require("google-auth-library");
+  if (process.env.GOOGLE_CLIENT_ID) {
+    client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  }
+} catch (e) {
+  // google-auth-library not installed or configured yet
+}
 
 const express = require('express');
 const router = express.Router();
@@ -65,6 +72,10 @@ router.post('/login', async (req, res) => {
 router.post("/google-login", async (req, res) => {
   try {
     const { token } = req.body; // frontend sends Google token
+
+    if (!client) {
+      return res.status(501).json({ msg: "Google OAuth is not configured on the server." });
+    }
 
     // Verify Google token
     const ticket = await client.verifyIdToken({
