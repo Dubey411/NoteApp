@@ -5,9 +5,9 @@
 ---
 
 ## 🚀 Live Demo & Links
-- 🌐 **Frontend (Vercel)**: Coming Soon / [Deploy on Vercel](#deployment)
-- ⚙️ **Backend (Render)**: [notebackend-4zqx.onrender.com](https://notebackend-4zqx.onrender.com)
-- 📦 **Monorepo**: Unified Full-Stack Architecture
+- 🌐 **Frontend (Live on Vercel)**: [note-app-iota-weld.vercel.app](https://note-app-iota-weld.vercel.app/)
+- ⚙️ **Backend (Live on Render)**: [noteapp-7afd.onrender.com](https://noteapp-7afd.onrender.com)
+- 📦 **Monorepo**: Unified Full-Stack Architecture (`Dubey411/NoteApp`)
 
 ---
 

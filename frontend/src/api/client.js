@@ -7,7 +7,7 @@ const isLocal =
 
 const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
-  (isLocal ? "http://localhost:5000" : "https://notebackend-4zqx.onrender.com");
+  (isLocal ? "http://localhost:5000" : "https://noteapp-7afd.onrender.com");
 
 const api = axios.create({
   baseURL: API_BASE_URL,
