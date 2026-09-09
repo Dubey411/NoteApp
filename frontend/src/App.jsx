@@ -7,6 +7,7 @@ import {
 } from "react-router-dom";
 import Note from "./components/NoteApp";
 import Auth from "./components/Auth";
+import ShareNote from "./components/ShareNote";
 // import { isAuthenticated } from "./utils/auth";
 
 import "./App.css";
@@ -32,6 +33,9 @@ function App() {
       <Routes>
         {/* Public login route */}
         <Route path="/" element={<Auth />} />
+
+        {/* Public shared note route */}
+        <Route path="/share/:shareId" element={<ShareNote />} />
 
         {/* Protected note route */}
         <Route

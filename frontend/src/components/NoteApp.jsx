@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
-import axios from "axios";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import Swal from "sweetalert2";
+import api from "../api/client";
 
 import {
   Search,
@@ -32,6 +34,15 @@ import {
   Flame,
   Menu,
   LogOut,
+  Mic,
+  MicOff,
+  Share2,
+  Pin,
+  Wand2,
+  RotateCcw,
+  Copy,
+  Check,
+  CheckSquare,
 } from "lucide-react";
 
 const App = () => {
@@ -54,6 +65,9 @@ const App = () => {
   const [viewMode, setViewMode] = useState("grid");
   const [filterTag, setFilterTag] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isAILoading, setIsAILoading] = useState(false);
   const [draggedNote, setDraggedNote] = useState(null);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [isTyping, setIsTyping] = useState(false);
@@ -175,14 +189,13 @@ const App = () => {
           return;
         }
 
-        const res = await axios.get("https://notebackend-4zqx.onrender.com/api/notes", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        setLoading(true);
+        const endpoint = showTrash ? "/api/notes/trash" : "/api/notes";
+        const res = await api.get(endpoint);
 
         if (Array.isArray(res.data)) {
           setNotes(res.data);
+          setError("");
         } else {
           setError("Unexpected response from server");
         }
@@ -198,7 +211,7 @@ const App = () => {
     };
 
     fetchNotes();
-  }, []); // runs once when component mounts
+  }, [showTrash]);
 
   // Typing indicator logic
   useEffect(() => {
@@ -243,15 +256,18 @@ const App = () => {
       note.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       note.content.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesTag = !filterTag || note.tags.includes(filterTag);
+    if (showTrash) return matchesSearch && matchesTag;
     const matchesArchived = showArchived ? note.archived : !note.archived;
     return matchesSearch && matchesTag && matchesArchived;
   });
 
-  // Sort notes (starred first, then by updated date)
+  // Sort notes (pinned first, then starred, then by updated date)
   const sortedNotes = filteredNotes.sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
     if (a.starred && !b.starred) return -1;
     if (!a.starred && b.starred) return 1;
-    return new Date(b.updatedAt) - new Date(a.updatedAt);
+    return new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt);
   });
 
   const getColorClasses = (colorName) => {
@@ -310,31 +326,19 @@ const App = () => {
   const handleCreateNote = async () => {
     if (!newNote.title.trim() && !newNote.content.trim()) return;
 
-    const token = localStorage.getItem("token");
-
-    if (!token) {
-      toast.error("❌ You must be logged in to create a note");
-      return;
-    }
-
     try {
       setIsLoading(true);
 
-      const res = await axios.post(
-        "https://notebackend-4zqx.onrender.com/api/notes",
-        {
-          title: newNote.title.trim() || "Untitled Masterpiece",
-          content: newNote.content.trim(),
-          color: newNote.color,
-          tags: newNote.tags,
-          starred: newNote.starred,
-          achieved: false,
-          icon: getRandomIcon().name,
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+      const res = await api.post("/api/notes", {
+        title: newNote.title.trim() || "Untitled Masterpiece",
+        content: newNote.content.trim(),
+        color: newNote.color,
+        tags: newNote.tags,
+        starred: newNote.starred,
+        pinned: newNote.pinned || false,
+        archived: false,
+        icon: getRandomIcon().name,
+      });
 
       setNotes([res.data, ...notes]);
       setNewNote({
@@ -343,40 +347,75 @@ const App = () => {
         color: "blue",
         tags: [],
         starred: false,
+        pinned: false,
       });
       setIsCreating(false);
       setShowEditor(false);
       toast.success("✅ Note created!");
       triggerConfetti();
     } catch (err) {
-      if (err.response?.status === 401) {
-        toast.error("❌ Unauthorized. Please log in again.");
-        // Optionally redirect to login page
-        // navigate("/login");
-      } else {
-        toast.error(err.response?.data?.msg || "❌ Failed to create note");
-      }
+      toast.error(err.response?.data?.msg || "❌ Failed to create note");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // ✅ Delete note (DELETE to backend)
+  // ✅ Move note to trash (Soft delete)
   const handleDeleteNote = async (id) => {
     try {
-      const token = localStorage.getItem("token");
-      await axios.delete(`https://notebackend-4zqx.onrender.com/api/notes/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      if (showTrash) {
+        // In trash view, deleting means permanent delete
+        await handlePermanentDelete(id);
+        return;
+      }
 
+      await api.put(`/api/notes/${id}/trash`, { isTrash: true });
       setNotes(notes.filter((note) => note._id !== id));
       if (editingNote && editingNote._id === id) {
         setEditingNote(null);
         setShowEditor(false);
       }
-      toast.success("🗑️ Note deleted!");
+      toast.info("🗑️ Note moved to Trash");
     } catch (err) {
-      toast.error(err.response?.data?.msg || "❌ Failed to delete note");
+      toast.error(err.response?.data?.msg || "❌ Failed to move to trash");
+    }
+  };
+
+  // ✅ Restore note from trash
+  const handleRestoreNote = async (id) => {
+    try {
+      await api.put(`/api/notes/${id}/trash`, { isTrash: false });
+      setNotes(notes.filter((note) => note._id !== id));
+      toast.success("♻️ Note restored to active notes!");
+      triggerConfetti();
+    } catch (err) {
+      toast.error("Failed to restore note");
+    }
+  };
+
+  // ✅ Permanent Delete
+  const handlePermanentDelete = async (id) => {
+    const result = await Swal.fire({
+      title: "Delete permanently?",
+      text: "This cannot be undone!",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#ef4444",
+      confirmButtonText: "Yes, delete forever",
+    });
+
+    if (result.isConfirmed) {
+      try {
+        await api.delete(`/api/notes/${id}/permanent`);
+        setNotes(notes.filter((note) => note._id !== id));
+        if (editingNote && editingNote._id === id) {
+          setEditingNote(null);
+          setShowEditor(false);
+        }
+        toast.success("💥 Note permanently deleted");
+      } catch (err) {
+        toast.error("Failed to delete permanently");
+      }
     }
   };
 
@@ -390,15 +429,11 @@ const App = () => {
   const handleSaveNote = async () => {
     if (editingNote.title.trim() || editingNote.content.trim()) {
       try {
-        const token = localStorage.getItem("token");
         setIsLoading(true);
 
-        const res = await axios.put(
-          `https://notebackend-4zqx.onrender.com/api/notes/${editingNote._id}`,
-          editingNote,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
+        const res = await api.put(
+          `/api/notes/${editingNote._id}`,
+          editingNote
         );
 
         setNotes(
@@ -416,16 +451,54 @@ const App = () => {
     }
   };
 
-  // ✅ Toggle star/archived (PATCH via PUT)
+  // ✅ Toggle Pin (sticks note to top)
+  const togglePin = async (id) => {
+    try {
+      const res = await api.put(`/api/notes/${id}/pin`);
+      setNotes(notes.map((n) => (n._id === id ? res.data : n)));
+      if (res.data.pinned) {
+        toast.success("📌 Note pinned to top!");
+        triggerConfetti();
+      } else {
+        toast.info("Note unpinned");
+      }
+    } catch (err) {
+      toast.error("Failed to toggle pin");
+    }
+  };
+
+  // ✅ Public Share Link
+  const handleShareNote = async (note) => {
+    try {
+      const res = await api.put(`/api/notes/${note._id}/share`);
+      const updated = res.data.note;
+      setNotes(notes.map((n) => (n._id === note._id ? updated : n)));
+
+      if (updated.isPublic && updated.shareId) {
+        const publicUrl = `${window.location.origin}/share/${updated.shareId}`;
+        await navigator.clipboard.writeText(publicUrl);
+        await Swal.fire({
+          icon: "success",
+          title: "🔗 Public Link Generated!",
+          html: `<p style="font-size: 14px; margin-bottom: 8px;">Anyone with this link can view this note without logging in.</p><input class="swal2-input" value="${publicUrl}" readonly style="font-size: 13px;" />`,
+          confirmButtonText: "Link Copied! 👍",
+        });
+      } else {
+        toast.info("Note is now private");
+      }
+    } catch (err) {
+      toast.error("Failed to update sharing");
+    }
+  };
+
+  // ✅ Toggle star/archived
   const toggleStar = async (id) => {
     try {
-      const token = localStorage.getItem("token");
       const note = notes.find((n) => n._id === id);
-      const res = await axios.put(
-        `https://notebackend-4zqx.onrender.com/api/notes/${id}`,
-        { ...note, starred: !note.starred },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const res = await api.put(`/api/notes/${id}`, {
+        ...note,
+        starred: !note.starred,
+      });
 
       setNotes(notes.map((n) => (n._id === id ? res.data : n)));
       if (!note.starred) triggerConfetti();
@@ -436,17 +509,153 @@ const App = () => {
 
   const toggleArchive = async (id) => {
     try {
-      const token = localStorage.getItem("token");
       const note = notes.find((n) => n._id === id);
-      const res = await axios.put(
-        `https://notebackend-4zqx.onrender.com/api/notes/${id}`,
-        { ...note, archived: !note.archived },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const res = await api.put(`/api/notes/${id}`, {
+        ...note,
+        archived: !note.archived,
+      });
 
       setNotes(notes.map((n) => (n._id === id ? res.data : n)));
     } catch (err) {
       toast.error("❌ Failed to update archive status");
+    }
+  };
+
+  // 🎙️ Voice Dictation (Native Web Speech API)
+  const handleVoiceDictate = () => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast.warn("Speech recognition isn't supported in this browser. Please try Chrome or Edge!");
+      return;
+    }
+
+    if (isListening) {
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onstart = () => {
+        setIsListening(true);
+        toast.info("🎙️ Listening... Speak your thoughts clearly!");
+      };
+
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = (e) => {
+        console.warn("Speech recognition error:", e);
+        setIsListening(false);
+      };
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        if (isCreating) {
+          setNewNote((prev) => ({
+            ...prev,
+            content: prev.content ? `${prev.content} ${transcript}` : transcript,
+          }));
+        } else if (editingNote) {
+          setEditingNote((prev) => ({
+            ...prev,
+            content: prev.content ? `${prev.content} ${transcript}` : transcript,
+          }));
+        }
+        toast.success("🎙️ Voice transcription added!");
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.error("Speech recognition start failed:", err);
+      setIsListening(false);
+    }
+  };
+
+  // ✨ AI Note Assistant Handlers
+  const handleAIPolish = async () => {
+    const content = isCreating ? newNote.content : editingNote?.content;
+    const title = isCreating ? newNote.title : editingNote?.title;
+    if (!content?.trim()) {
+      toast.warn("Write some notes first so AI can polish them!");
+      return;
+    }
+
+    try {
+      setIsAILoading(true);
+      const res = await api.post("/api/ai/polish", { title, content });
+      if (isCreating) {
+        setNewNote((prev) => ({ ...prev, content: res.data.result }));
+      } else {
+        setEditingNote((prev) => ({ ...prev, content: res.data.result }));
+      }
+      toast.success("✨ Note polished with AI!");
+      triggerConfetti();
+    } catch (err) {
+      toast.error("AI Polish failed");
+    } finally {
+      setIsAILoading(false);
+    }
+  };
+
+  const handleAISummarize = async () => {
+    const content = isCreating ? newNote.content : editingNote?.content;
+    const title = isCreating ? newNote.title : editingNote?.title;
+    if (!content?.trim()) {
+      toast.warn("Note needs content to summarize!");
+      return;
+    }
+
+    try {
+      setIsAILoading(true);
+      const res = await api.post("/api/ai/summarize", { title, content });
+      const summaryText = `> 💡 **AI Summary**: ${res.data.summary}\n\n`;
+      if (isCreating) {
+        setNewNote((prev) => ({
+          ...prev,
+          content: `${summaryText}${prev.content}`,
+        }));
+      } else {
+        setEditingNote((prev) => ({
+          ...prev,
+          aiSummary: res.data.summary,
+          content: `${summaryText}${prev.content}`,
+        }));
+      }
+      toast.success("📝 AI Summary generated!");
+      triggerConfetti();
+    } catch (err) {
+      toast.error("AI Summarize failed");
+    } finally {
+      setIsAILoading(false);
+    }
+  };
+
+  const handleAIExtractTasks = async () => {
+    const content = isCreating ? newNote.content : editingNote?.content;
+    if (!content?.trim()) {
+      toast.warn("Write something first so AI can find action items!");
+      return;
+    }
+
+    try {
+      setIsAILoading(true);
+      const res = await api.post("/api/ai/extract-tasks", { content });
+      const taskBlock = `\n\n### ✅ Action Items:\n${res.data.tasks}`;
+      if (isCreating) {
+        setNewNote((prev) => ({ ...prev, content: prev.content + taskBlock }));
+      } else {
+        setEditingNote((prev) => ({ ...prev, content: prev.content + taskBlock }));
+      }
+      toast.success("✅ Action items extracted!");
+      triggerConfetti();
+    } catch (err) {
+      toast.error("AI Task extraction failed");
+    } finally {
+      setIsAILoading(false);
     }
   };
 
@@ -771,7 +980,10 @@ const App = () => {
           <div className="flex gap-2 sm:gap-4 overflow-x-auto pb-2 sm:pb-0">
             <div className="flex gap-2 sm:gap-4 min-w-max">
               <button
-                onClick={() => setShowArchived(!showArchived)}
+                onClick={() => {
+                  setShowArchived(!showArchived);
+                  if (!showArchived) setShowTrash(false);
+                }}
                 className={`px-3 sm:px-5 py-2 sm:py-3 rounded-lg sm:rounded-xl transition-all duration-500 shadow-lg whitespace-nowrap text-sm sm:text-base ${
                   showArchived
                     ? "bg-gradient-to-r from-orange-500 to-red-500 text-white"
@@ -784,6 +996,25 @@ const App = () => {
               >
                 <Archive className="w-3 sm:w-5 h-3 sm:h-5 inline mr-1 sm:mr-2" />
                 {showArchived ? "Hide Archived" : "Show Archived"}
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowTrash(!showTrash);
+                  if (!showTrash) setShowArchived(false);
+                }}
+                className={`px-3 sm:px-5 py-2 sm:py-3 rounded-lg sm:rounded-xl transition-all duration-500 shadow-lg whitespace-nowrap text-sm sm:text-base ${
+                  showTrash
+                    ? "bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-red-500/30"
+                    : `${
+                        darkMode
+                          ? "bg-gray-700/60 text-gray-300 hover:text-red-400"
+                          : "bg-gray-100/80 text-gray-700 hover:text-red-500"
+                      }`
+                }`}
+              >
+                <Trash2 className="w-3 sm:w-5 h-3 sm:h-5 inline mr-1 sm:mr-2" />
+                {showTrash ? "Exit Trash" : "Trash"}
               </button>
 
               {allTags.map((tag) => (
@@ -967,74 +1198,150 @@ const App = () => {
 
                         <div className="flex justify-between items-start mb-3 sm:mb-4 ml-12 sm:ml-16">
                           <h3
-                            className={`font-bold truncate flex-1 text-base sm:text-lg ${
+                            className={`font-bold truncate flex-1 text-base sm:text-lg flex items-center gap-1.5 ${
                               darkMode ? "text-white" : "text-gray-800"
                             }`}
                           >
-                            {note.starred && (
-                              <Star className="w-4 sm:w-5 h-4 sm:h-5 inline mr-1 sm:mr-2 text-yellow-500 fill-current animate-pulse" />
+                            {note.pinned && (
+                              <Pin className="w-4 h-4 text-indigo-400 fill-current flex-shrink-0" />
                             )}
-                            {note.title}
+                            {note.starred && (
+                              <Star className="w-4 h-4 text-yellow-500 fill-current flex-shrink-0 animate-pulse" />
+                            )}
+                            {note.isPublic && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px] font-medium border border-emerald-500/30 flex-shrink-0">
+                                Public
+                              </span>
+                            )}
+                            <span className="truncate">{note.title}</span>
                           </h3>
 
-                          <div className="flex gap-1 sm:gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all duration-300">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleStar(note._id); // Changed from note.id to note._id to match your backend
-                              }}
-                              className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
-                                note.starred
-                                  ? "text-yellow-500 bg-yellow-500/20"
-                                  : `${
-                                      darkMode
-                                        ? "text-gray-400 hover:text-yellow-400 hover:bg-yellow-400/20"
-                                        : "text-gray-500 hover:text-yellow-500 hover:bg-yellow-500/20"
-                                    }`
-                              }`}
-                            >
-                              <Star className="w-3 sm:w-5 h-3 sm:h-5" />
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleArchive(note._id); // Changed from note.id to note._id
-                              }}
-                              className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
-                                note.archived
-                                  ? "text-orange-500 bg-orange-500/20"
-                                  : `${
-                                      darkMode
-                                        ? "text-gray-400 hover:text-orange-400 hover:bg-orange-400/20"
-                                        : "text-gray-500 hover:text-orange-500 hover:bg-orange-500/20"
-                                    }`
-                              }`}
-                            >
-                              <Archive className="w-3 sm:w-5 h-3 sm:h-5" />
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteNote(note._id); // Changed from note.id to note._id
-                              }}
-                              className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
-                                darkMode
-                                  ? "text-gray-400 hover:text-red-400 hover:bg-red-400/20"
-                                  : "text-gray-500 hover:text-red-500 hover:bg-red-500/20"
-                              }`}
-                            >
-                              <Trash2 className="w-3 sm:w-5 h-3 sm:h-5" />
-                            </button>
+                          <div className="flex gap-1 sm:gap-1.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all duration-300">
+                            {showTrash ? (
+                              <>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRestoreNote(note._id);
+                                  }}
+                                  title="Restore Note"
+                                  className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl text-emerald-400 hover:bg-emerald-500/20 transition-all transform hover:scale-125"
+                                >
+                                  <RotateCcw className="w-3.5 sm:w-4 h-3.5 sm:h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handlePermanentDelete(note._id);
+                                  }}
+                                  title="Delete Forever"
+                                  className="p-1.5 sm:p-2 rounded-lg sm:rounded-xl text-rose-400 hover:bg-rose-500/20 transition-all transform hover:scale-125"
+                                >
+                                  <Trash2 className="w-3.5 sm:w-4 h-3.5 sm:h-4" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    togglePin(note._id);
+                                  }}
+                                  title={note.pinned ? "Unpin note" : "Pin note to top"}
+                                  className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
+                                    note.pinned
+                                      ? "text-indigo-400 bg-indigo-500/20"
+                                      : `${
+                                          darkMode
+                                            ? "text-gray-400 hover:text-indigo-400 hover:bg-indigo-400/20"
+                                            : "text-gray-500 hover:text-indigo-500 hover:bg-indigo-500/20"
+                                        }`
+                                  }`}
+                                >
+                                  <Pin className="w-3 sm:w-4 h-3 sm:h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleShareNote(note);
+                                  }}
+                                  title={note.isPublic ? "Copy public link" : "Share public link"}
+                                  className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
+                                    note.isPublic
+                                      ? "text-emerald-400 bg-emerald-500/20"
+                                      : `${
+                                          darkMode
+                                            ? "text-gray-400 hover:text-emerald-400 hover:bg-emerald-400/20"
+                                            : "text-gray-500 hover:text-emerald-500 hover:bg-emerald-500/20"
+                                        }`
+                                  }`}
+                                >
+                                  <Share2 className="w-3 sm:w-4 h-3 sm:h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleStar(note._id);
+                                  }}
+                                  title="Star note"
+                                  className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
+                                    note.starred
+                                      ? "text-yellow-500 bg-yellow-500/20"
+                                      : `${
+                                          darkMode
+                                            ? "text-gray-400 hover:text-yellow-400 hover:bg-yellow-400/20"
+                                            : "text-gray-500 hover:text-yellow-500 hover:bg-yellow-500/20"
+                                        }`
+                                  }`}
+                                >
+                                  <Star className="w-3 sm:w-4 h-3 sm:h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleArchive(note._id);
+                                  }}
+                                  title="Archive note"
+                                  className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
+                                    note.archived
+                                      ? "text-orange-500 bg-orange-500/20"
+                                      : `${
+                                          darkMode
+                                            ? "text-gray-400 hover:text-orange-400 hover:bg-orange-400/20"
+                                            : "text-gray-500 hover:text-orange-500 hover:bg-orange-500/20"
+                                        }`
+                                  }`}
+                                >
+                                  <Archive className="w-3 sm:w-4 h-3 sm:h-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteNote(note._id);
+                                  }}
+                                  title="Move to trash"
+                                  className={`p-1.5 sm:p-2 rounded-lg sm:rounded-xl transition-all duration-300 transform hover:scale-125 ${
+                                    darkMode
+                                      ? "text-gray-400 hover:text-red-400 hover:bg-red-400/20"
+                                      : "text-gray-500 hover:text-red-500 hover:bg-red-500/20"
+                                  }`}
+                                >
+                                  <Trash2 className="w-3 sm:w-4 h-3 sm:h-4" />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
 
-                        <p
+                        <div
                           className={`text-xs sm:text-sm mb-3 sm:mb-4 line-clamp-3 ml-12 sm:ml-16 ${
                             darkMode ? "text-gray-300" : "text-gray-600"
-                          } leading-relaxed`}
+                          } leading-relaxed prose prose-sm dark:prose-invert max-w-none`}
                         >
-                          {note.content || "No content"}
-                        </p>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {note.content || "No content"}
+                          </ReactMarkdown>
+                        </div>
 
                         {note.tags.length > 0 && (
                           <div className="flex flex-wrap gap-1 sm:gap-2 mb-2 sm:mb-3 ml-12 sm:ml-16">
@@ -1345,6 +1652,72 @@ const App = () => {
                         } border rounded-xl sm:rounded-2xl focus:ring-4 focus:ring-purple-500/30 focus:border-purple-500 outline-none transition-all duration-500 backdrop-blur-sm hover:shadow-lg text-sm sm:text-base`}
                       />
                     </div>
+                  </div>
+
+                  {/* AI & Voice Toolbar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-gradient-to-r from-purple-500/10 via-indigo-500/10 to-pink-500/10 border border-purple-500/20 backdrop-blur-md">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                      <span className="text-xs font-bold text-purple-400 flex items-center gap-1 mr-1">
+                        <Sparkles className="w-3.5 h-3.5" /> AI Tools:
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={handleAIPolish}
+                        disabled={isAILoading}
+                        className="px-2.5 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 text-xs font-medium border border-purple-500/30 flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                        title="Restructure and format notes with AI"
+                      >
+                        <Wand2 className="w-3.5 h-3.5 text-purple-400" />
+                        <span>{isAILoading ? "Processing..." : "AI Polish"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleAISummarize}
+                        disabled={isAILoading}
+                        className="px-2.5 py-1.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 text-xs font-medium border border-indigo-500/30 flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                        title="Generate 2-3 sentence AI summary"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Summarize</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleAIExtractTasks}
+                        disabled={isAILoading}
+                        className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-xs font-medium border border-emerald-500/30 flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                        title="Extract actionable tasks into checklist"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Extract Tasks</span>
+                      </button>
+                    </div>
+
+                    {/* Voice Dictation (Speech-to-text) */}
+                    <button
+                      type="button"
+                      onClick={handleVoiceDictate}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
+                        isListening
+                          ? "bg-rose-500 text-white animate-pulse shadow-lg shadow-rose-500/50"
+                          : `${darkMode ? "bg-gray-800 text-gray-300 border-gray-700" : "bg-white text-gray-700 border-gray-200"} border hover:scale-105`
+                      }`}
+                      title="Dictate note with microphone"
+                    >
+                      {isListening ? (
+                        <>
+                          <MicOff className="w-3.5 h-3.5 animate-bounce" />
+                          <span>Listening...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Mic className="w-3.5 h-3.5 text-indigo-500" />
+                          <span>Voice Dictate</span>
+                        </>
+                      )}
+                    </button>
                   </div>
 
                   {/* Enhanced Content Textarea - Mobile optimized */}

@@ -23,9 +23,9 @@ import {
   Crown,
   Flame,
 } from "lucide-react";
-import axios from "axios";
+import api from "../api/client";
 import { useNavigate } from "react-router-dom";
- import Swal from "sweetalert2";
+import Swal from "sweetalert2";
 
 
 const AuthApp = () => {
@@ -71,8 +71,8 @@ const AuthApp = () => {
   }, [darkMode]);
 
   useEffect(() => {
-    axios
-      .get("https://notebackend-4zqx.onrender.com/api/message")
+    api
+      .get("/api/message")
       .then((response) => setData(response.data.message))
       .catch((error) => console.error("Error:", error));
   }, []);
@@ -182,9 +182,7 @@ const AuthApp = () => {
 
   setIsLoading(true);
 
-  const endpoint = isLogin
-    ? "https://notebackend-4zqx.onrender.com/api/auth/login"
-    : "https://notebackend-4zqx.onrender.com/api/auth/signup";
+  const endpoint = isLogin ? "/api/auth/login" : "/api/auth/signup";
 
   const payload = isLogin
     ? { email: formData.email, password: formData.password }
@@ -195,7 +193,7 @@ const AuthApp = () => {
       };
 
   try {
-    const res = await axios.post(endpoint, payload);
+    const res = await api.post(endpoint, payload);
     const { token, user } = res.data;
 
     localStorage.setItem("token", token);
@@ -231,7 +229,7 @@ const AuthApp = () => {
   const googleLogin = useGoogleLogin({
     onSuccess: async (tokenResponse)=>{
       try{
-        const res = await axios.post("https://notebackend-4zqx.onrender.com/api/auth/google-login",{
+        const res = await api.post("/api/auth/google-login",{
          token: tokenResponse.access_token,
       })
 
@@ -250,7 +248,7 @@ const AuthApp = () => {
   })
 
 
-  const handleSocialAuth = (provider: string) => {
+  const handleSocialAuth = (provider) => {
     if (provider === "Google") {
       googleLogin(); // actually start Google OAuth flow
     }

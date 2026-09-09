@@ -18,9 +18,30 @@ const noteSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  pinned: {
+    type: Boolean,
+    default: false,
+  },
   archived: {
     type: Boolean,
     default: false,
+  },
+  isTrash: {
+    type: Boolean,
+    default: false,
+  },
+  isPublic: {
+    type: Boolean,
+    default: false,
+  },
+  shareId: {
+    type: String,
+    unique: true,
+    sparse: true,
+  },
+  aiSummary: {
+    type: String,
+    default: "",
   },
   icon: {
     type: String,
