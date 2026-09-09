@@ -54,6 +54,13 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ msg: "Invalid credentials" });
 
+    // Check if user has a password (not a pure Google OAuth user)
+    if (!user.password) {
+      return res.status(400).json({
+        msg: "This account was created via Google. Please log in with Google.",
+      });
+    }
+
     // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ msg: "Invalid credentials" });
@@ -63,6 +70,7 @@ router.post('/login', async (req, res) => {
 
     res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {
+    console.error("Login Error:", err);
     res.status(500).json({ msg: "Server error" });
   }
 });
